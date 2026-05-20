@@ -10,6 +10,11 @@ import os
 # --- CONFIG & STYLING ---
 st.set_page_config(page_title="Sunflower Inventory Pro", layout="wide")
 
+# Initialize Session State for Navigation
+if 'current_step' not in st.session_state:
+    st.session_state.current_step = 0
+
+# Custom CSS for Bold Buttons and Centralized Header
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
@@ -21,20 +26,15 @@ st.markdown("""
         letter-spacing: 2px; color: #1E1E1E; margin-top: -10px; text-transform: uppercase;
     }
 
-    div[data-baseweb="tab-list"] { gap: 20px; justify-content: center; background-color: transparent; }
-    div[data-baseweb="tab"] {
-        background-color: #f0f2f6; border-radius: 12px; padding: 12px 30px !important;
-        font-weight: 700; border: 1px solid #ddd; min-width: 200px; text-align: center;
-    }
-    div[data-baseweb="tab"][aria-selected="true"] {
-        background-color: #1E1E1E !important; color: white !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    }
+    /* Styling for our custom Navigation Row */
+    .nav-container { display: flex; justify-content: center; gap: 20px; margin-bottom: 30px; }
+    
+    /* We will use standard streamlit buttons but styled via the App's Primary Color Settings */
     </style>
     """, unsafe_allow_html=True)
 
 # --- DATABASE ENGINE ---
-DB_NAME = 'sunflower_pro_v13.db'
+DB_NAME = 'sunflower_pro_v14.db'
 
 def init_db():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -52,9 +52,10 @@ def reset_database():
     c = conn.cursor()
     c.execute("DELETE FROM inventory")
     conn.commit()
+    st.session_state.current_step = 0
     st.rerun()
 
-# --- HEADER ---
+# --- HEADER SECTION ---
 col_l, col_m, col_r = st.columns([1, 1, 1])
 with col_m:
     if os.path.exists("logo.png"):
@@ -62,14 +63,26 @@ with col_m:
 
 st.markdown('<div class="main-header"><h1 class="header-text">SUNFLOWER LOUNGE & RESTAURANT</h1></div>', unsafe_allow_html=True)
 
-# --- CATEGORY BRAIN ---
-CATEGORY_MAP = {
-    "SOFTS / BEERS": ["WATER", "BEER", "STOUT", "DESPERADO", "HEINEKEN", "TIGER", "LIFE", "TROPHY", "FAYROUZ", "MALTA", "COKE", "SPRITE", "FANTA", "BITTERS", "BULLET", "RADLER", "FLYING FISH", "LEGEND", "HERO", "GOLDBERG", "CASTLE", "ORIGIN", "D/BLACK"],
-    "SHISHA": ["SHISHA"], "WINES": ["WINE", "DROSFDY", "HOF", "CHAMPAGNE"],
-    "MOCKTAIL": ["CHAPMAN", "SUNRISE", "VIRGIN", "MOCKTAIL", "SWEET SUNRISE"]
-}
+# --- NAVIGATION BUTTONS (Top of Page) ---
+# This replaces st.tabs to allow programmatic switching
+nav_col1, nav_col2, nav_col3 = st.columns([1,1,1])
 
-# --- UNIVERSAL PARSING ENGINE ---
+with nav_col1:
+    if st.button("📋 1. INVENTORY BALANCE", use_container_width=True, type="primary" if st.session_state.current_step == 0 else "secondary"):
+        st.session_state.current_step = 0
+        st.rerun()
+
+with nav_col2:
+    if st.button("📤 2. UPLOAD & SYNC", use_container_width=True, type="primary" if st.session_state.current_step == 1 else "secondary"):
+        st.session_state.current_step = 1
+        st.rerun()
+
+with nav_col3:
+    if st.button("📜 3. FINAL REPORT", use_container_width=True, type="primary" if st.session_state.current_step == 2 else "secondary"):
+        st.session_state.current_step = 2
+        st.rerun()
+
+# --- PARSING ENGINE ---
 def process_report(file):
     raw_text = ""
     if file.name.lower().endswith(('.pdf', '.xps')):
@@ -88,50 +101,48 @@ def process_report(file):
         name = m[0].strip().upper()
         qty = int(m[1])
         if "TOTAL" in name or "SNOOKER" in name: continue
-        cat = "UNCATEGORIZED"
-        for c_group, keywords in CATEGORY_MAP.items():
-            if any(key in name for key in keywords):
-                cat = c_group; break
-        extracted.append({"name": name, "qty": qty, "category": cat})
+        extracted.append({"name": name, "qty": qty})
     return extracted, report_date
 
-# --- APP LOGIC ---
+# --- LOAD DATA ---
 df_db = pd.read_sql_query("SELECT * FROM inventory", conn)
-tabs = st.tabs(["📋 1. INVENTORY BALANCE", "📤 2. UPLOAD & SYNC", "📜 3. FINAL REPORT"])
 
-# --- TAB 1: BALANCE ---
-with tabs[0]:
+# --- STEP 1: BALANCE ---
+if st.session_state.current_step == 0:
     st.header("Step 1: Record Opening Balance")
     if df_db.empty:
-        st.info("Inventory is empty. Setup your stock manually or upload an initial report.")
+        st.info("Inventory is empty.")
         c1, c2 = st.columns(2)
         if c1.button("✨ Initialize Common Products (Qty 0)"):
             for name, cat in [("WATER", "SOFTS / BEERS"), ("HEINEKEN", "SOFTS / BEERS")]:
                 conn.execute("INSERT OR IGNORE INTO inventory (name, category, manual_stock) VALUES (?,?,0)", (name, cat))
             conn.commit()
             st.rerun()
-        
-        up_stock = c2.file_uploader("Upload Initial Stock Report", type=["pdf", "xps", "csv"], key="init_up")
+        up_stock = c2.file_uploader("Upload Initial Stock Report", type=["pdf", "xps", "csv"])
         if up_stock:
             items, r_date = process_report(up_stock)
             if items and st.button("🚀 Set as Initial Balance"):
                 for item in items:
-                    conn.execute("""INSERT INTO inventory (name, category, manual_stock, last_updated) VALUES (?,?,?,?)
-                                 ON CONFLICT(name) DO UPDATE SET manual_stock=excluded.manual_stock""", (item['name'], item['category'], item['qty'], r_date))
+                    conn.execute("INSERT INTO inventory (name, manual_stock, last_updated) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET manual_stock=excluded.manual_stock", (item['name'], item['qty'], r_date))
                 conn.commit()
                 st.rerun()
     else:
         edited_df = st.data_editor(df_db[["category", "name", "manual_stock", "reorder_level"]], use_container_width=True, hide_index=True)
         if st.button("💾 Save All Changes"):
             for _, row in edited_df.iterrows():
-                conn.execute("UPDATE inventory SET manual_stock=?, reorder_level=? WHERE name=?", (row['manual_stock'], row['reorder_level'], row['name']))
+                conn.execute("UPDATE inventory SET manual_stock=?, reorder_level=?, category=? WHERE name=?", (row['manual_stock'], row['reorder_level'], row['category'], row['name']))
             conn.commit()
             st.success("Changes saved!")
+        
+        # NEXT BUTTON
+        if st.button("➡️ NEXT STEP: UPLOAD SALES", use_container_width=True):
+            st.session_state.current_step = 1
+            st.rerun()
 
-# --- TAB 2: UPLOAD SALES ---
-with tabs[1]:
+# --- STEP 2: UPLOAD SALES ---
+elif st.session_state.current_step == 1:
     st.header("Step 2: Deduct Daily Sales")
-    sales_file = st.file_uploader("Upload Sales Report", type=["pdf", "xps", "csv"], key="sale_up")
+    sales_file = st.file_uploader("Upload Sales Report", type=["pdf", "xps", "csv"])
     if sales_file:
         sales_items, r_date = process_report(sales_file)
         if sales_items:
@@ -143,11 +154,15 @@ with tabs[1]:
                                  (item['qty'], item['qty'], r_date, item['name']))
                 conn.commit()
                 st.success("Sales Deducted!")
+            
+            # NEXT BUTTON
+            if st.button("➡️ NEXT STEP: VIEW FINAL REPORT", use_container_width=True):
+                st.session_state.current_step = 2
                 st.rerun()
 
-# --- TAB 3: FINAL REPORT & EXPORT ---
-with tabs[2]:
-    st.header("Step 3: Stock Movement Report")
+# --- STEP 3: FINAL REPORT ---
+elif st.session_state.current_step == 2:
+    st.header("Step 3: Final Inventory Report")
     if not df_db.empty:
         report_df = df_db.copy()
         report_df['Opening'] = report_df['manual_stock'] + report_df['last_sales_qty']
@@ -158,51 +173,33 @@ with tabs[2]:
         )
 
         st.markdown("---")
-        st.subheader("📥 Export Official Report")
-        
         if st.button("📝 Generate PDF Report"):
             pdf = FPDF()
             pdf.add_page()
-            
-            # Center Logo
             if os.path.exists("logo.png"):
-                # Page width is 210mm. To center a 40mm image: (210 - 40) / 2 = 85
                 pdf.image("logo.png", x=85, y=10, w=40)
-                pdf.ln(45) # Space after logo
-            
+                pdf.ln(45)
             pdf.set_font("Arial", 'B', 16)
             pdf.cell(190, 10, "SUNFLOWER LOUNGE & RESTAURANT", ln=True, align='C')
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(190, 10, "INVENTORY MOVEMENT REPORT", ln=True, align='C')
             pdf.set_font("Arial", '', 10)
             pdf.cell(190, 10, f"Date: {datetime.now().strftime('%d %b %Y %H:%M')}", ln=True, align='C')
             pdf.ln(10)
-
-            # Table Header
-            pdf.set_fill_color(30, 30, 30)
-            pdf.set_text_color(255, 255, 255)
+            
+            # PDF Table
+            pdf.set_fill_color(200, 200, 200)
             pdf.cell(80, 10, " Product", border=1, fill=True)
-            pdf.cell(40, 10, " Start Bal", border=1, fill=True)
+            pdf.cell(30, 10, " Start", border=1, fill=True)
             pdf.cell(30, 10, " Sold", border=1, fill=True)
-            pdf.cell(40, 10, " Current Bal", border=1, fill=True, ln=True)
-
-            # Table Body
-            pdf.set_text_color(0, 0, 0)
+            pdf.cell(50, 10, " Balance", border=1, fill=True, ln=True)
+            
+            pdf.set_font("Arial", '', 10)
             for _, row in report_df.iterrows():
-                pdf.cell(80, 10, f" {row['name']}", border=1)
-                pdf.cell(40, 10, f" {row['Opening']}", border=1)
-                pdf.cell(30, 10, f" {row['last_sales_qty']}", border=1)
-                pdf.cell(40, 10, f" {row['manual_stock']}", border=1, ln=True)
+                pdf.cell(80, 10, str(row['name']), border=1)
+                pdf.cell(30, 10, str(row['Opening']), border=1)
+                pdf.cell(30, 10, str(row['last_sales_qty']), border=1)
+                pdf.cell(50, 10, str(row['manual_stock']), border=1, ln=True)
 
-            pdf_data = pdf.output(dest='S').encode('latin-1')
-            st.download_button(
-                label="📥 Download PDF Now",
-                data=pdf_data,
-                file_name=f"sunflower_report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                mime="application/pdf"
-            )
-    else:
-        st.info("No data available to generate a report.")
+            st.download_button("📥 Download PDF Now", data=pdf.output(dest='S').encode('latin-1'), file_name="report.pdf")
 
 # --- FOOTER RESET ---
 st.markdown("---")
@@ -210,7 +207,7 @@ if st.button("🏠 Home / Reset System", use_container_width=True):
     st.session_state.confirm_wipe = True
 
 if st.session_state.get('confirm_wipe'):
-    st.error("Wipe all data?")
+    st.error("Wipe all data and restart?")
     ca, cb = st.columns(2)
     if ca.button("✅ YES"): 
         reset_database()
